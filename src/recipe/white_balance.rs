@@ -2,7 +2,7 @@ use super::WhiteBalanceMode;
 
 #[cfg_attr(
     feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize, PartialEq, Debug),
     serde(rename_all = "snake_case")
 )]
 pub struct WhiteBalance {

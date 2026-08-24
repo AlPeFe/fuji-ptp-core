@@ -1,4 +1,7 @@
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)
+)]
 pub enum GrainEffect {
     Off,
     WeakSmall,

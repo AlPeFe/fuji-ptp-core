@@ -49,7 +49,7 @@ impl Recipe {
 /// bridge itself stays a thin transport layer.
 #[cfg_attr(
     feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
+    derive(serde::Serialize, serde::Deserialize, PartialEq, Debug),
     serde(rename_all = "snake_case")
 )]
 pub struct Recipe {
