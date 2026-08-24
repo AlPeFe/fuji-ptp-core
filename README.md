@@ -134,9 +134,27 @@ lectura de data/response y errores de protocolo.
 
 ## Android
 
-Android debe proporcionar una implementación de `Transport` propia. El core no depende de USB,
-JNI, Flutter ni APIs Android. La integración Android puede vivir en otro proyecto o crate y solo
-debe traducir sus operaciones USB a `send` y `receive`.
+El directorio `fuji-ptp-android/` contiene la base de integración Android:
+
+```text
+fuji-ptp-android/
+├── README.md
+├── android/                 # módulo Android/Kotlin
+│   └── app/src/main/kotlin/
+│       └── com/alpefe/fujiptp/
+│           ├── FujiUsbManager.kt  # discovery + UsbIoBridge
+│           └── FujiNative.kt
+└── rust/                    # crate JNI separado
+```
+
+Android debe proporcionar la conexión USB mediante `UsbManager`, `UsbDeviceConnection` y
+`bulkTransfer`. `FujiUsbManager` busca el vendor Fujifilm `0x04CB`, la interfaz PTP `0x06` y los
+endpoints bulk IN/OUT. `UsbIoBridge` mantiene la conexión y deja el protocolo PTP en Rust.
+
+El core no depende de USB, JNI ni APIs Android. La integración Android se mantiene en un crate
+separado y debe conectar sus operaciones USB con una implementación de `Transport`. Consulta
+[`fuji-ptp-android/README.md`](fuji-ptp-android/README.md) para preparar el módulo y compilar el
+bridge con `cargo-ndk`.
 
 ## Limitaciones actuales
 

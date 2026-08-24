@@ -1,0 +1,11 @@
+[package]
+name = "fuji-ptp-android"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+fuji-ptp-core = { path = "../.." }
+jni = "0.21"
