@@ -1,62 +1,133 @@
 package com.alpefe.fujiptp
 
-import android.content.Context
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
 import android.hardware.usb.UsbManager
+import android.content.Context
+import android.content.Intent
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 
-/** Android USB Host discovery and bulk I/O. PTP remains in Rust. */
-class FujiUsbManager(context: Context) {
+import android.os.Build
+
+/**
+ * Raw bulk I/O contract used by the Rust bridge. `UsbIoBridge` is the real
+ * USB implementation; the interface exists so the bridge can be swapped in
+ * tests and so the JNI layer only ever depends on `send`/`receive`.
+ */
+interface UsbIo {
+    /** Bulk OUT. Returns bytes written, or a negative value on failure. */
+    fun send(data: ByteArray): Int
+
+    /** Bulk IN. Returns up to [size] bytes; may throw on failure. */
+    fun receive(size: Int): ByteArray
+
+    fun close()
+}
+
+/**
+ * Android USB Host implementation. The whole PTP/Fujifilm protocol lives in
+ * Rust; this class only does USB discovery, permission, and bulk I/O.
+ */
+class FujiUsbManager(private val context: Context) {
     private val usb = context.getSystemService(Context.USB_SERVICE) as UsbManager
 
     fun findPtpCamera(): UsbDevice? = usb.deviceList.values.firstOrNull { device ->
         device.vendorId == FUJI_VENDOR_ID && findPtpInterface(device) != null
     }
 
-    fun open(device: UsbDevice): UsbIoBridge {
-        val iface = findPtpInterface(device) ?: error("Fujifilm PTP interface not found")
-        val connection = usb.openDevice(device) ?: error("USB permission denied")
-        check(connection.claimInterface(iface.usbInterface, true)) { "Unable to claim PTP interface" }
-        return UsbIoBridge(connection, iface.usbInterface, iface.bulkIn, iface.bulkOut)
+    fun hasPermission(device: UsbDevice): Boolean = usb.hasPermission(device)
+
+    /**
+     * Requests USB permission. The caller must already have registered
+     * [receiver] for [ACTION_USB_PERMISSION]; the result arrives there.
+     */
+    fun requestPermission(device: UsbDevice, receiver: BroadcastReceiver) {
+        val flags = if (Build.VERSION.SDK_INT >= 31) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val intent = PendingIntent.getBroadcast(
+            context, 0, Intent(ACTION_USB_PERMISSION).setPackage(context.packageName), flags,
+        )
+        usb.requestPermission(device, intent)
     }
 
+    /** Opens the PTP interface and hands back a working [UsbIoBridge]. */
+    fun openBridge(device: UsbDevice): UsbIoBridge {
+        val ptp = findPtpInterface(device) ?: error("Fujifilm PTP interface not found")
+        val connection = usb.openDevice(device) ?: error("USB permission denied")
+        check(connection.claimInterface(ptp.usbInterface, true)) { "Unable to claim PTP interface" }
+        return UsbIoBridge(connection, ptp.usbInterface, ptp.bulkIn, ptp.bulkOut)
+    }
+
+    /**
+     * Locates the PTP interface: prefer class 0x06 (PTP/imaging), fall back to
+     * any interface exposing a bulk IN/OUT endpoint pair (some Fuji bodies
+     * present a vendor-specific interface).
+     */
     private fun findPtpInterface(device: UsbDevice): PtpInterface? {
+        var fallback: PtpInterface? = null
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
-            if (iface.interfaceClass != PTP_CLASS) continue
-            var input: UsbEndpoint? = null
-            var output: UsbEndpoint? = null
-            for (e in 0 until iface.endpointCount) {
-                val endpoint = iface.getEndpoint(e)
-                if (endpoint.type != UsbConstants.USB_ENDPOINT_XFER_BULK) continue
-                if (endpoint.direction == UsbConstants.USB_DIR_IN) input = endpoint else output = endpoint
-            }
-            if (input != null && output != null) return PtpInterface(iface, input!!, output!!)
+            val pair = findBulkPair(iface) ?: continue
+            if (iface.interfaceClass == PTP_CLASS) return pair
+            if (fallback == null) fallback = pair
         }
-        return null
+        return fallback
     }
 
-    private data class PtpInterface(val usbInterface: UsbInterface, val bulkIn: UsbEndpoint, val bulkOut: UsbEndpoint)
+    private fun findBulkPair(iface: UsbInterface): PtpInterface? {
+        var input: UsbEndpoint? = null
+        var output: UsbEndpoint? = null
+        for (e in 0 until iface.endpointCount) {
+            val endpoint = iface.getEndpoint(e)
+            if (endpoint.type != UsbConstants.USB_ENDPOINT_XFER_BULK) continue
+            if (endpoint.direction == UsbConstants.USB_DIR_IN) input = endpoint else output = endpoint
+        }
+        return if (input != null && output != null) PtpInterface(iface, input!!, output!!) else null
+    }
 
-    companion object { const val FUJI_VENDOR_ID = 0x04CB; private const val PTP_CLASS = 0x06 }
+    private data class PtpInterface(
+        val usbInterface: UsbInterface,
+        val bulkIn: UsbEndpoint,
+        val bulkOut: UsbEndpoint,
+    )
+
+    companion object {
+        const val ACTION_USB_PERMISSION = "com.alpefe.fujiptp.USB_PERMISSION"
+        const val FUJI_VENDOR_ID = 0x04CB
+        private const val PTP_CLASS = 0x06
+    }
 }
 
+/** USB bulk I/O over a claimed interface. Owns the [UsbDeviceConnection]. */
 class UsbIoBridge(
     private val connection: UsbDeviceConnection,
     private val claimedInterface: UsbInterface,
     private val bulkIn: UsbEndpoint,
     private val bulkOut: UsbEndpoint,
-) : AutoCloseable {
-    fun send(data: ByteArray): Int = connection.bulkTransfer(bulkOut, data, data.size, TIMEOUT)
-    fun receive(size: Int): ByteArray {
+) : UsbIo {
+    override fun send(data: ByteArray): Int =
+        connection.bulkTransfer(bulkOut, data, data.size, TIMEOUT)
+
+    override fun receive(size: Int): ByteArray {
         val buffer = ByteArray(size)
         val count = connection.bulkTransfer(bulkIn, buffer, size, TIMEOUT)
         check(count >= 0) { "USB receive failed: $count" }
         return buffer.copyOf(count)
     }
-    override fun close() { connection.releaseInterface(claimedInterface) ; connection.close() }
-    companion object { private const val TIMEOUT = 5000 }
+
+    override fun close() {
+        runCatching { connection.releaseInterface(claimedInterface) }
+        runCatching { connection.close() }
+    }
+
+    companion object {
+        private const val TIMEOUT = 5000
+    }
 }
