@@ -1,5 +1,10 @@
 use super::WhiteBalanceMode;
 
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(rename_all = "snake_case")
+)]
 pub struct WhiteBalance {
     pub mode: WhiteBalanceMode,
     pub shift_r: i16,

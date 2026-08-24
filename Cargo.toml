@@ -6,4 +6,11 @@ edition = "2024"
 [workspace]
 members = ["desktop-client"]
 
+[features]
+# Optional JSON serialization for the recipe domain model. Used by the
+# Android JNI bridge so the bridge stays a thin transport layer.
+serde = ["dep:serde", "dep:serde_json"]
+
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
