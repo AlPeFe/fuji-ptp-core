@@ -394,6 +394,75 @@ impl<T: Transport> FujiPtp<T> {
         self.set(PROP_SLOT_NAME, Self::name_bytes(&r.name)?)
     }
 
+    /// Writes every recipe setting EXCEPT the slot name. The camera keeps
+    /// whatever name the slot already had. This is what the Android app uses
+    /// when pushing recipes, so an imported recipe never garbles the name
+    /// stored on the camera (name changes are done explicitly via
+    /// [`Self::write_recipe_names`]).
+    pub fn write_recipe_settings(&mut self, slot: u8, r: &Recipe) -> Result<(), FujiPtpError> {
+        self.select_slot(slot)?;
+        self.set(FILM, Self::u16v(Self::film_wire(&r.film_simulation)))?;
+        let priority = match r.dynamic_range_priority {
+            0 => 0,
+            1 => 1,
+            2 => 2,
+            32768 => 32768,
+            _ => return Err(FujiPtpError::InvalidData),
+        };
+        self.set(DR_PRIORITY, Self::u16v(priority))?;
+        if priority == 0 {
+            self.set(
+                DR,
+                Self::u16v(match r.dynamic_range {
+                    DynamicRange::Dr100 => 100,
+                    DynamicRange::Dr200 => 200,
+                    DynamicRange::Dr400 => 400,
+                }),
+            )?;
+        }
+        if Self::is_mono(&r.film_simulation) {
+            self.set(MONO_WC, Self::i16v(Self::dial(r.monochrome_wc)?))?;
+            self.set(MONO_MG, Self::i16v(Self::dial(r.monochrome_mg)?))?;
+        }
+        self.set(GRAIN, Self::u16v(Self::grain_wire(&r.grain_effect)))?;
+        if !Self::is_mono(&r.film_simulation) {
+            self.set(
+                COLOR_CHROME,
+                Self::u16v(Self::strength_wire(&r.color_chrome)),
+            )?;
+            self.set(
+                FX_BLUE,
+                Self::u16v(Self::strength_wire(&r.color_chrome_fx_blue)),
+            )?;
+        }
+        self.set(SMOOTH, Self::u16v(Self::strength_wire(&r.smooth_skin)))?;
+        self.set(WB, Self::u16v(Self::wb_wire(&r.white_balance.mode)))?;
+        if !(-9..=9).contains(&r.white_balance.shift_r)
+            || !(-9..=9).contains(&r.white_balance.shift_b)
+        {
+            return Err(FujiPtpError::InvalidData);
+        }
+        if !Self::is_mono(&r.film_simulation) {
+            self.set(WB_R, Self::i16v(r.white_balance.shift_r))?;
+            self.set(WB_B, Self::i16v(r.white_balance.shift_b))?;
+        }
+        if matches!(r.white_balance.mode, WhiteBalanceMode::ColorTemperature) {
+            if let Some(t) = r.white_balance.color_temperature {
+                self.set(TEMP, Self::u16v(t))?;
+            }
+        }
+        for (p, x) in [
+            (HIGHLIGHT, r.highlight),
+            (SHADOW, r.shadow),
+            (COLOR, r.color),
+            (SHARPNESS, r.sharpness),
+            (CLARITY, r.clarity),
+        ] {
+            self.set(p, Self::i16v(Self::dial(x)?))?;
+        }
+        self.set(NR, Self::u16v(Self::nr_wire(r.noise_reduction)?))
+    }
+
     pub fn write_recipes(&mut self, profile: &Profile) -> Result<(), FujiPtpError> {
         for (i, r) in profile.recipes.iter().enumerate() {
             self.select_slot((i + 1) as u8)?;
