@@ -329,6 +329,9 @@ impl<T: Transport> FujiPtp<T> {
     /// Writes one complete recipe to one slot. Intended for cautious hardware tests.
     pub fn write_recipe(&mut self, slot: u8, r: &Recipe) -> Result<(), FujiPtpError> {
         self.select_slot(slot)?;
+        // Name FIRST: it's the property that gets dropped when the camera
+        // truncates the last operation, so write it while the slot is fresh.
+        self.set(PROP_SLOT_NAME, Self::name_bytes(&r.name)?)?;
         self.set(FILM, Self::u16v(Self::film_wire(&r.film_simulation)))?;
         let priority = match r.dynamic_range_priority {
             0 => 0,
@@ -391,7 +394,7 @@ impl<T: Transport> FujiPtp<T> {
             self.set(p, Self::i16v(Self::dial(x)?))?;
         }
         self.set(NR, Self::u16v(Self::nr_wire(r.noise_reduction)?))?;
-        self.set(PROP_SLOT_NAME, Self::name_bytes(&r.name)?)
+        Ok(())
     }
 
     /// Writes every recipe setting EXCEPT the slot name. The camera keeps
