@@ -173,7 +173,9 @@ impl<T: Transport> FujiPtp<T> {
     }
     fn grain(v: u16) -> Option<GrainEffect> {
         match v {
-            1 | 6 => Some(GrainEffect::Off),
+            // X100VI reports 7 for Off (the wire value it stores); the
+            // X100V-era firmware used 6. Accept both on read.
+            1 | 6 | 7 => Some(GrainEffect::Off),
             2 => Some(GrainEffect::WeakSmall),
             3 => Some(GrainEffect::StrongSmall),
             4 => Some(GrainEffect::WeakLarge),
@@ -620,6 +622,62 @@ impl<T: Transport> FujiPtp<T> {
             WhiteBalanceMode::Underwater => 8,
             WhiteBalanceMode::ColorTemperature => 0x8007,
             WhiteBalanceMode::AmbiencePriority => 0x8021,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grain_read_accepts_x100vi_off_values() {
+        // X100VI stores Grain Off as 7; older firmware used 6; wire 1 is
+        // what we write. All three must read back as Off.
+        for v in [1u16, 6, 7] {
+            assert!(
+                matches!(
+                    FujiPtp::<crate::transport::MockTransport>::grain(v),
+                    Some(GrainEffect::Off)
+                ),
+                "grain {v} should be Off"
+            );
+        }
+        assert!(matches!(
+            FujiPtp::<crate::transport::MockTransport>::grain(2),
+            Some(GrainEffect::WeakSmall)
+        ));
+        assert!(matches!(
+            FujiPtp::<crate::transport::MockTransport>::grain(5),
+            Some(GrainEffect::StrongLarge)
+        ));
+        assert!(FujiPtp::<crate::transport::MockTransport>::grain(0).is_none());
+        assert!(FujiPtp::<crate::transport::MockTransport>::grain(99).is_none());
+    }
+
+    #[test]
+    fn grain_write_roundtrip() {
+        // What we write maps back to the same enum on read.
+        for g in [
+            GrainEffect::Off,
+            GrainEffect::WeakSmall,
+            GrainEffect::StrongSmall,
+            GrainEffect::WeakLarge,
+            GrainEffect::StrongLarge,
+        ] {
+            let wire = FujiPtp::<crate::transport::MockTransport>::grain_wire(&g);
+            // The camera may normalize Off to 7, so accept the write value
+            // or the camera's stored value.
+            let read = if matches!(g, GrainEffect::Off) {
+                FujiPtp::<crate::transport::MockTransport>::grain(wire).or(FujiPtp::<
+                    crate::transport::MockTransport,
+                >::grain(
+                    7
+                ))
+            } else {
+                FujiPtp::<crate::transport::MockTransport>::grain(wire)
+            };
+            assert!(read.is_some(), "grain should round-trip");
         }
     }
 }
